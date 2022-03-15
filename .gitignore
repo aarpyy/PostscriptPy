@@ -6,3 +6,4 @@ Pipfile
 main.py
 images/*
 .DS_Store
+src/__pycache__/
