@@ -5,3 +5,4 @@ venv/
 Pipfile
 main.py
 images/*
+.DS_Store
