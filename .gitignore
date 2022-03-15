@@ -1,0 +1,7 @@
+.idea/
+out/
+temp/
+venv/
+Pipfile
+main.py
+images/*
