@@ -1,10 +1,13 @@
+from enum import Enum
 from pathlib import Path
 from os import system
 from PIL import Image
-from random import randrange
-from math import sin, cos, radians, atan, degrees, tan, sqrt, floor, ceil
+from random import randrange, uniform
+from math import sin, cos, radians, atan, tan, sqrt, floor, ceil
 from typing import Sequence, Callable
 from collections import deque
+from perlin_noise import PerlinNoise
+from numpy import shape
 
 
 def read_image(file) -> list[list[tuple[int, int, int]]]:
@@ -18,7 +21,7 @@ def read_image(file) -> list[list[tuple[int, int, int]]]:
 
     # If relative path, check to see if it's in the images folder
     if "/" not in file:
-        images = PostscriptPy.root.joinpath("images")
+        images = PostscriptPy.source.joinpath("images")
         if not images.joinpath(file).is_file():
             raise ValueError("Relative path to image not found")
         else:
@@ -28,44 +31,54 @@ def read_image(file) -> list[list[tuple[int, int, int]]]:
 
     buffer = []
 
-    # Remove alpha value since postscript doesn't have alphas
-    data = list(pixel[:-1] for pixel in img.getdata())
+    if file.endswith(".png"):
+        # Remove alpha value since postscript doesn't have alphas
+        data = list(pixel[:-1] for pixel in img.getdata())
+    else:
+        data = list(img.getdata())
+
     w = img.width
     for i in range(img.height):
         buffer.append(data[i * w:(i + 1) * w])
     return buffer
 
 
-def write_img_data(file):
-    """
-    Extension of img_to_data() that writes the output list to a file in the
-    pixels folder of the project.
+class PostscriptPy(object):
 
-    :param file: image
-    :return: None
-    """
-    path = str(PostscriptPy.root.joinpath("pixels"))
-    with open(f"{path}.pixel", "w") as out:
-        out.writelines('|'.join(line) for line in read_image(file))
+    class EPS(Enum):
+        RECT = 1
+        RECT_FILL = 2
+        SQUARE = 3
+        SQUARE_FILL = 4
 
+    CURRENT_VERSION = 1.1
 
-class PostscriptPy:
-    RECT = 1
-    RECT_FILL = 2
-    SQUARE = 3
-    SQUARE_FILL = 4
+    WATERMARK = "%Made by Postcript.py"
+    __WATERMARK_1_1 = WATERMARK + " v1.1"
 
-    watermark = "%Made by Postcript.py"
+    __WATERMARKS = {
+        1.0: WATERMARK,
+        1.1: __WATERMARK_1_1
+    }
 
-    root = Path(__file__).parent.parent
+    __BGST = "%BACKGROUNDSTART"
+    __BGEND = "%BACKGROUNDEND"
+
+    source = Path(__file__).parent.parent
 
     # Path for save files
-    path_out = root.joinpath("out")
+    __path_out = source.joinpath("out")
 
     # Path for a temp file, used for displaying image once, files in temp will be overwritten
-    path_temp = root.joinpath("temp")
+    __path_temp = source.joinpath("temp")
 
-    def __init__(self, *args, _load: bool = False, _buffer: str = None, _ref: list[list[tuple[int, int, int]]] = None):
+    def __init__(
+            self,
+            *args,
+            _load: bool = False,
+            _buffer: str = None,
+            _ref: list[list[tuple[int, int, int]]] = None
+    ):
         """
         Constructs new instance of PostscriptPy object based on image size or
         a pre-constructed buffer.
@@ -73,20 +86,23 @@ class PostscriptPy:
         :param args: image size (w, h) for rect image, (w) for square
         :param _load: if constructor is being used to load from pre-written buffer
         :param _buffer: pre-written buffer
+        :param _ref: reference image, given in 2D list of pixel values
         """
-        if _load:
 
-            # Don't include %EOF or showpage since those should be last and prevent new stuff from being added easily
-            lines = [
-                line for line in _buffer.split() if not line.startswith("%EOF") and not line.startswith("showpage")
-            ]
+        if _load:
+            lines = _buffer.split("\n")
+            if "v" in lines[0]:
+                self.__version__ = float(lines[0].split("v")[1])
+            else:
+                self.__version__ = 1.0
             for line in lines:
-                if line.startswith("%%Bounding Box: "):
+                if line.startswith("%%BoundingBox:"):
                     size = line.split(" ")
                     self.w = int(size[3])
                     self.h = int(size[4])
 
-            self._buffer = "\n".join(lines)
+            # Don't include %EOF or showpage since those should be last and prevent new stuff from being added easily
+            self._buffer = "\n".join(lines[:-2]) + "\n"
         else:
             if _ref is None:
                 match len(args):
@@ -95,20 +111,47 @@ class PostscriptPy:
                     case 2:
                         self.w = args[0]
                         self.h = args[1]
+                    case _:
+                        raise ValueError(f"Invalid args: {args}")
             else:
                 self.w = len(_ref[0])
                 self.h = len(_ref)
 
-            self._buffer = f"{PostscriptPy.watermark}\n" \
+            self.__version__ = 1.1
+            self._buffer = f"{PostscriptPy.__WATERMARKS[self.__version__]}\n" \
                            f"%!PS-Adobe-3.0 EPSF-3.0\n" \
-                           f"%%BoundingBox: 0 0 {self.w} {self.h}\n"
+                           f"%%BoundingBox: 0 0 {self.w} {self.h}\n" \
+                           f"{PostscriptPy.__BGST}\n" \
+                           f"{PostscriptPy.__BGEND}\n"
 
-        self.defined = set()
+        self._defined = set()
         self._color = None
         self._ref = _ref
 
     def __str__(self):
         return self._buffer
+
+    def out(self, file=None):
+
+        if file is None:
+            n = 0
+            for p in self.__path_out.iterdir():
+                if p.is_file() and str(p).split('/')[-1].startswith("pspy"):
+                    n = max(n, int(str(p).split('/')[-1].split(".")[0][4:]))
+            file = str(self.__path_out.joinpath(f"pspy{n + 1}.eps"))
+        elif "/" not in file:
+            file = str(self.__path_out.joinpath(file))
+            if not file.endswith(".eps"):
+                file += ".eps"
+
+        self._buffer += "showpage\n%EOF"
+        with open(file, "w") as psfile:
+            psfile.write(self._buffer)
+
+    def draw(self):
+        file = str(self.__path_temp.joinpath(f"image.eps"))
+        self.out(file)
+        system(f"open -a Preview {file}")
 
     @property
     def width(self):
@@ -118,9 +161,312 @@ class PostscriptPy:
     def height(self):
         return self.h
 
+    @classmethod
+    def stdcanvas(cls, w: int, h: int, *colors) -> 'PostscriptPy':
+        """
+        Creates and returns a PostscriptPy object with stdline configuration and
+        the background color set
+        """
+        eps = PostscriptPy(w, h)
+        eps.setstdline()
+        if colors:
+            eps.background(*colors)
+        return eps
+
     @staticmethod
     def from_image(fp: str):
         return PostscriptPy(_ref=read_image(fp))
+
+    @staticmethod
+    def from_image_flexible(
+            file: str,
+            *,
+            k: int = 20,
+            gray: bool = False,
+            neg: bool = False,
+            rndm: bool = False,
+            background: tuple[int, int, int] = (255, 255, 255),
+            noise: PerlinNoise = None
+    ):
+
+        pixels = read_image(file)
+
+        # Function used for creating a function of a line for sides of hexagon
+        point_slope_y = lambda m, _x, _y: lambda __y: (__y - _y) / m + _x
+
+        width = sqrt(3) * k  # Full width of hexagon
+        half = width / 2  # Half width
+        k1 = k / 2  # Half the height of hexagon
+
+        vertices = [[], []]  # First 2 rows empty
+
+        x = half  # Center of first hexagon is at (half, k)
+
+        # Width and height of original images
+        p_width = len(pixels[0])
+        p_height = len(pixels)
+
+        # While the right edge of the current hex is within bounds of image, increment
+        # x by the width of hexagon to find the number of whole hexagons that fit
+        while x + half <= p_width:
+            vertices[0].append((x, k))
+            x += width
+
+        w = x - half
+
+        x = width
+        y = 5 * k1
+        while x + half <= p_width:
+            vertices[1].append((x, y))
+            x += width
+
+        # Width value is set so that hexagons fit neatly
+        w = ceil(max(w, x - half))
+
+        i = 0
+        y = 5 * k1
+        while 1:
+            y += 3 * k1
+            if y + k >= p_height:
+                break
+
+            vertices.append([(x, y) for x, _ in vertices[i]])
+            i += 1
+
+        # Height set also so that hexagons fit neatly
+        h = ceil(y - k1)
+
+        eps = PostscriptPy.stdcanvas(w, h, *background)
+
+        for row in vertices:
+            for x, y in row:
+                dx = half
+                dy = k1
+
+                # Left side of hexagon, upper and lower slopes
+                upper_left_bound = point_slope_y(dy / dx, x, y + k)
+                lower_left_bound = point_slope_y(-dy / dx, x, y - k)
+
+                colors = (0, 0, 0)
+                n_colors = 0
+
+                # Iterate the height of the hexagon top->down
+
+                # From top of hex to first vertex
+                for j in range(floor(y + k), ceil(y + k1), -1):
+
+                    x3 = upper_left_bound(j)
+                    for i in range(ceil(x3), floor(2 * x - x3)):
+                        colors = tuple(a + b for a, b in zip(colors, pixels[j][i]))
+                        n_colors += 1
+
+                # From first vertex to second vertex, both sides are vertical so no slope
+                for j in range(floor(y + k1), ceil(y - k1), -1):
+                    for i in range(ceil(x - half), floor(x + half)):
+                        colors = tuple(a + b for a, b in zip(colors, pixels[j][i]))
+                        n_colors += 1
+
+                # From second vertex to bottom of hex
+                for j in range(floor(y - k1), ceil(y - k), -1):
+                    x3 = lower_left_bound(j)
+                    for i in range(ceil(x3), floor(2 * x - x3)):
+                        colors = tuple(a + b for a, b in zip(colors, pixels[j][i]))
+                        n_colors += 1
+
+                # Average color
+                colors = tuple(a / n_colors for a in colors)
+
+                v = sum(colors) / 765
+                if gray:
+                    colors = (0, 0, 0)
+                elif noise is not None:
+                    v = noise((x / w, y / h)) + 0.5
+                elif rndm:
+                    v = uniform(0, 1)
+                elif not neg:
+                    v = 1 - v
+
+                y1 = v * 3 * k / 4
+                x1 = v * half / 2
+                x2 = v * half
+
+                star = [
+                    (x, h - (y + k)),
+                    (x + x1, h - (y + y1)),
+                    (x + half, h - (y + k1)),
+                    (x + x2, h - y),
+                    (x + half, h - (y - k1)),
+                    (x + x1, h - (y - y1)),
+                    (x, h - (y - k)),
+                    (x - x1, h - (y - y1)),
+                    (x - half, h - (y - k1)),
+                    (x - x2, h - y),
+                    (x - half, h - (y + k1)),
+                    (x - x1, h - (y + y1))
+                ]
+                eps.fill_poly(star, *colors)
+
+        return eps
+
+    @staticmethod
+    def from_image_blend(
+            file1: str,
+            file2: str,
+            *,
+            grad: float = 1.0,
+            k: int = 20,
+            neg: bool = False,
+            background: tuple[int, int, int] = (255, 255, 255),
+            noise: PerlinNoise = None
+    ):
+        """
+        Creates an image constructed of flexible 6-pointed stars that are colored
+        the combination of the images from file1 and file2, the ratio of combination
+        being generated by Perlin noise.
+
+        The grad argument allows for the user to choose
+        how much of image 2 contributes to the final iamge. A grad value of
+        1.0 (default) means that the final color is influenced only by the
+        noise function, while a grad value of 0.0 means that the final
+        color is entirely image 1, regardless of noise. Grad 0 is equivalent
+        to running PostscriptPy.from_image_flexible()
+
+        :param file1: first image
+        :param file2: second image
+        :param grad: gradiant of how much of file2 to show
+        :param k: size of side of hexagon
+        :param neg: increase size for lighter color instead of darker
+        :param background: background color
+        :param noise: PerlinNoise object
+        :return: PostscriptPy picture
+        """
+
+        pixels1 = read_image(file1)
+        pixels2 = read_image(file2)
+
+        if shape(pixels1) != shape(pixels2):
+            raise ValueError("Images are not the same shape!")
+
+        # Function used for creating a function of a line for sides of hexagon
+        point_slope_y = lambda m, _x, _y: lambda __y: (__y - _y) / m + _x
+
+        width = sqrt(3) * k     # Full width of hexagon
+        half = width / 2        # Half width
+        k1 = k / 2              # Half the height of hexagon
+
+        vertices = [[], []]     # First 2 rows empty
+
+        x = half                # Center of first hexagon is at (half, k)
+
+        # Width and height of original images
+        p_width = len(pixels1[0])
+        p_height = len(pixels1)
+
+        # While the right edge of the current hex is within bounds of image, increment
+        # x by the width of hexagon to find the number of whole hexagons that fit
+        while x + half <= p_width:
+            vertices[0].append((x, k))
+            x += width
+
+        w = x - half
+
+        x = width
+        y = 5 * k1
+        while x + half <= p_width:
+            vertices[1].append((x, y))
+            x += width
+
+        # Width value is set so that hexagons fit neatly
+        w = ceil(max(w, x - half))
+
+        i = 0
+        y = 5 * k1
+        while 1:
+            y += 3 * k1
+            if y + k >= p_height:
+                break
+
+            vertices.append([(x, y) for x, _ in vertices[i]])
+            i += 1
+
+        # Height set also so that hexagons fit neatly
+        h = ceil(y - k1)
+
+        eps = PostscriptPy.stdcanvas(w, h, *background)
+
+        for row in vertices:
+            for x, y in row:
+                dx = half
+                dy = k1
+
+                # Left side of hexagon, upper and lower slopes
+                upper_left_bound = point_slope_y(dy / dx, x, y + k)
+                lower_left_bound = point_slope_y(-dy / dx, x, y - k)
+
+                colors1 = (0, 0, 0)
+                colors2 = (0, 0, 0)
+                n_colors = 0
+
+                # Iterate the height of the hexagon top->down
+
+                # From top of hex to first vertex
+                for j in range(floor(y + k), ceil(y + k1), -1):
+
+                    x3 = upper_left_bound(j)
+                    for i in range(ceil(x3), floor(2 * x - x3)):
+                        colors1 = tuple(a + b for a, b in zip(colors1, pixels1[j][i]))
+                        colors2 = tuple(a + b for a, b in zip(colors2, pixels2[j][i]))
+                        n_colors += 1
+
+                # From first vertex to second vertex, both sides are vertical so no slope
+                for j in range(floor(y + k1), ceil(y - k1), -1):
+                    for i in range(ceil(x - half), floor(x + half)):
+                        colors1 = tuple(a + b for a, b in zip(colors1, pixels1[j][i]))
+                        colors2 = tuple(a + b for a, b in zip(colors2, pixels2[j][i]))
+                        n_colors += 1
+
+                # From second vertex to bottom of hex
+                for j in range(floor(y - k1), ceil(y - k), -1):
+                    x3 = lower_left_bound(j)
+                    for i in range(ceil(x3), floor(2 * x - x3)):
+                        colors1 = tuple(a + b for a, b in zip(colors1, pixels1[j][i]))
+                        colors2 = tuple(a + b for a, b in zip(colors2, pixels2[j][i]))
+                        n_colors += 1
+
+                # Average colors
+                colors1 = tuple(a / n_colors for a in colors1)
+                colors2 = tuple(a / n_colors for a in colors2)
+
+                # Noise for how much of image 2 to include, noise function returns between -0.5 and 0.5
+                v1 = (noise((x / w, y / h)) + 0.5) * grad
+
+                colors = tuple(a * v1 + b * (1 - v1) for a, b in zip(colors1, colors2))
+
+                v2 = sum(colors) / 765
+                if not neg:
+                    v2 = 1 - v2
+
+                y1 = v2 * 3 * k / 4
+                x1 = v2 * half / 2
+                x2 = v2 * half
+
+                star = [
+                    (x, h - (y + k)),
+                    (x + x1, h - (y + y1)),
+                    (x + half, h - (y + k1)),
+                    (x + x2, h - y),
+                    (x + half, h - (y - k1)),
+                    (x + x1, h - (y - y1)),
+                    (x, h - (y - k)),
+                    (x - x1, h - (y - y1)),
+                    (x - half, h - (y - k1)),
+                    (x - x2, h - y),
+                    (x - half, h - (y + k1)),
+                    (x - x1, h - (y + y1))
+                ]
+                eps.fill_poly(star, *colors)
+
+        return eps
 
     def fill_squares(
             self,
@@ -158,8 +504,9 @@ class PostscriptPy:
         w = (len(self._ref[0]) // k) * k
         h = (len(self._ref) // k) * k
 
-        k_sq = k * k
-        k_2 = k // 2
+        # Two values of k that are used a lot and therefore pre-computed and stored
+        k1 = k * k
+        k2 = k / 2
 
         cols = w // k
         rows = h // k
@@ -177,7 +524,7 @@ class PostscriptPy:
                         colors = tuple(x + y for x, y in zip(colors, self._ref[jk + jp][ik + ip]))
 
                 # Take the average of the pixel value (k * k total pixels)
-                colors = tuple(x // k_sq for x in colors)
+                colors = tuple(x // k1 for x in colors)
 
                 if use_saddle:
                     size = saddle(i, j)
@@ -186,9 +533,8 @@ class PostscriptPy:
                     size = randrange(1, k)
                 elif gray:
                     # Set color to be black and size to correlate to brightness value
-                    avg = sum(colors) / 3
                     colors = (0, 0, 0)
-                    size = round(k * ((255 - avg) / 255), 3)
+                    size = round(k * ((255 - sum(colors) / 3) / 255), 3)
                 elif neg:
                     # If negate, correlate larger with lighter colors
                     size = round((sum(colors) / (3 * 255)) * k, 3)
@@ -196,136 +542,120 @@ class PostscriptPy:
                     # Otherwise darker colors means larger
                     size = round(((255 - (sum(colors) / 3)) / 255) * k, 3)
 
-                self.fill_square(*PostscriptPy.center_square(ik + k_2, h - (jk + k_2), size), *colors)
-
-    @classmethod
-    def from_image_flexible(
-            cls,
-            file: str,
-            *,
-            k: int = 20,
-            bckgrnd: tuple[int, int, int] = None,
-            gray: bool = False,
-            neg: bool = False,
-            rndm: bool = False,
-    ):
-
-        point_slope_y = lambda m, _x, _y: lambda __y: (__y - _y) / m + _x
-
-        pixels = read_image(file)
-
-        width = sqrt(3) * k
-        half = width / 2
-        k1 = k / 2
-
-        # First 2 rows empty
-        vertices = [[], []]
-
-        x = half
-
-        # While the right edge of the current hex is within bounds of image
-        while x + half < len(pixels[0]):
-            vertices[0].append((x, k))
-            x += width
-
-        x = width
-        y = 5 * k1
-        while x + half < len(pixels[0]):
-            vertices[1].append((x, y))
-            x += width
-
-        i = 0
-        y = 5 * k1
-        while 1:
-            y += 3 * k1
-            if y + k >= len(pixels):
-                break
-
-            vertices.append([(x, y) for x, _ in vertices[i]])
-            y += 3 * k1
-            if y + k >= len(pixels):
-                break
-
-            i += 1
-            vertices.append([(x, y) for x, _ in vertices[i]])
-            i += 1
-
-        h = k * (3 * len(vertices) + 1) / 2
-        w = width * (len(vertices[0]) + 0.5)
-
-        eps = cls(w, h)
-        if bckgrnd is not None:
-            eps.color(*bckgrnd)
-            eps.fill_rect(0, 0, w, h)
-        eps.setlinejoin()
-        eps.setlinecap()
-        eps.setlinewidth(2)
-
-        for row in vertices:
-            for x, y in row:
-                dx = half
-                dy = k1
-
-                upper_left_bound = point_slope_y(dy / dx, x, y + k)
-                lower_left_bound = point_slope_y(-dy / dx, x, y - k)
-
-                colors = (0, 0, 0)
-                n_colors = 0
-
-                # Iterate the height of the hexagon top->down
-                for j in range(floor(y + k), ceil(y + k1), -1):
-
-                    x3 = upper_left_bound(j)
-                    for i in range(ceil(x3), floor(2 * x - x3)):
-                        colors = tuple(a + b for a, b in zip(colors, pixels[j][i]))
-                        n_colors += 1
-
-                for j in range(floor(y + k1), ceil(y - k1), -1):
-                    for i in range(ceil(x - half), floor(x + half)):
-                        colors = tuple(a + b for a, b in zip(colors, pixels[j][i]))
-                        n_colors += 1
-
-                for j in range(floor(y - k1), ceil(y - k), -1):
-                    x3 = lower_left_bound(j)
-                    for i in range(ceil(x3), floor(2 * x - x3)):
-                        colors = tuple(a + b for a, b in zip(colors, pixels[j][i]))
-                        n_colors += 1
-
-                colors = tuple(a / n_colors for a in colors)
-
-                # sum(colors) / 3 / 255
-                v = sum(colors) / 765
-                y1 = v * 3 * k / 4
-                x1 = v * half / 2
-                x2 = v * half
-
-                # x, y = point
-                # eps.draw_line(x, y, x2=x, y2=y)
-                # hexagon = [(x, y + k), (x + width / 2, y + k / 2), (x + width / 2, y - k / 2),
-                #            (x, y - k), (x - width / 2, y - k / 2), (x - width / 2, y + k / 2)]
-                star = [
-                    (x, h - (y + k)),
-                    (x + x1, h - (y + y1)),
-                    (x + half, h - (y + k1)),
-                    (x + x2, h - y),
-                    (x + half, h - (y - k1)),
-                    (x + x1, h - (y - y1)),
-                    (x, h - (y - k)),
-                    (x - x1, h - (y - y1)),
-                    (x - half, h - (y - k1)),
-                    (x - x2, h - y),
-                    (x - half, h - (y + k1)),
-                    (x - x1, h - (y + y1))
-                ]
-                eps.fill_poly(star, *colors)
-
-        return eps
+                self.fill_square(*PostscriptPy.center_square(ik + k2, h - (jk + k2), size), *colors)
 
     def curve_fractal(self, depth: int = 2, f_h: float = 0.5, f_l: float = 0.5):
 
+        def get_intercepts(fx: Callable, fy: Callable, U=None, D=0, L=0, R=None):
+            if U is None:
+                U = self.h
+            if R is None:
+                R = self.w
+
+            # If line intersects the lower bound within the right and left bounds
+            if R >= fy(D) >= L:
+                _p1 = (fy(D), D)
+
+                # Find second intersection among upper, right, and left bounds
+                if R >= fy(U) >= L:
+                    _p2 = (fy(U), U)
+                elif U >= fx(R) >= D:
+                    _p2 = (R, fx(R))
+                else:
+                    _p2 = (L, fx(L))
+
+            # If line intersects left bound between upper and lower
+            elif U >= fx(L) >= D:
+                _p1 = (L, fx(L))
+
+                # Find second intersection among upper and right bounds since it wasn't down
+                if R >= fy(U) >= L:
+                    _p2 = (fy(U), U)
+                else:
+                    _p2 = (R, fx(R))
+
+            # Since the line MUST intersect two sides, if it didn't intersect either left or lower,
+            # it must be upper and right
+            else:
+                _p1 = (R, fx(R))
+                _p2 = (fy(U), U)
+
+            return _p1, _p2
+
+        def get_bounding(_p1, _p2, _theta, U=None, D=0, L=0, R=None):
+
+            if U is None:
+                U = self.h
+            if R is None:
+                R = self.w
+
+            from math import pi
+
+            # If angle is between 0° and 135°, then the largest y value is considered the 'first' point
+            if _theta < 3 * pi / 4:
+                if _p1[1] < _p2[1]:
+                    _p1, _p2 = _p2[:], _p1[:]
+
+            # If angle is between 135° and 225°, then 'first' is lowest x
+            elif _theta < 5 * pi / 4:
+                if _p1[0] > _p2[0]:
+                    _p1, _p2 = _p2[:], _p1[:]
+
+            # If angle between 225° and 305°, then 'first' is lowest y
+            elif _theta < 7 * pi / 4:
+                if _p1[1] > _p2[1]:
+                    _p1, _p2 = _p2[:], _p1[:]
+
+            # Otherwise, if angle between 305° and 360°, then 'first' is largest x
+            else:
+                if _p1[0] < _p2[0]:
+                    _p1, _p2 = _p2[:], _p1[:]
+
+            # Vertices of bounding box
+            vertices = [(L, D), (L, U), (R, U), (R, D)]
+
+            # Find where p1 fits in, in cyclic order
+            if _p1[1] == D:
+                i1 = 4
+            elif _p1[0] == L:
+                i1 = 1
+            elif _p1[1] == U:
+                i1 = 2
+            else:
+                i1 = 3
+
+            # Find where p2 fits in, in cyclic order
+            if _p2[1] == D:
+                i2 = 4
+            elif _p2[0] == L:
+                i2 = 1
+            elif _p2[1] == U:
+                i2 = 2
+            else:
+                i2 = 3
+
+            if i2 < i1:
+                vertices.insert(i1, _p1)
+                vertices.insert(i2, _p2)
+                i1 += 1
+            else:
+                vertices.insert(i2, _p2)
+                vertices.insert(i1, _p1)
+                i2 += 1
+
+            points = []
+
+            k = i1
+            while k != i2:
+                points.append(vertices[k])
+                k = (k + 1) % 6
+
+            points.append(vertices[i2])
+            return points
+
         from math import pi
 
-        _2pi = 2 * pi
+        pi2 = 2 * pi
 
         polys = deque()
         polys.appendleft(((0, 0), (self.w, self.h * f_h), (self.w, 0)))
@@ -343,15 +673,15 @@ class PostscriptPy:
 
         for i in range(1, depth):
             # Rotate by increment of theta
-            theta = (theta + d_theta) % _2pi
+            theta = (theta + d_theta) % pi2
 
             f_x = point_slope_x(tan(theta), *point)
             f_y = point_slope_y(tan(theta), *point)
 
-            p1, p2 = self.get_intercepts(f_x, f_y)
+            p1, p2 = get_intercepts(f_x, f_y)
             point = ((p1[0] + p2[0]) * f_l, (p1[1] + p2[1]) * f_l)
 
-            polys.appendleft(self.get_bounding(p1, p2, theta))
+            polys.appendleft(get_bounding(p1, p2, theta))
 
         gray = 0
         d_gray = min(255 / depth, 5)
@@ -374,164 +704,73 @@ class PostscriptPy:
         self.rotate(270)
         self.curve_fractal(depth=depth, f_h=f_h, f_l=f_l)
 
-    def get_intercepts(self, fx: Callable, fy: Callable, U=None, D=0, L=0, R=None):
-        if U is None:
-            U = self.h
-        if R is None:
-            R = self.w
+    def frame(self, w: float = 10, r: int = None, g: int = None, b: int = None):
+        self.fill_rect(0, 0, w, self.h, r, g, b)  # Left border
+        self.fill_rect(0, self.h - w, self.w, w, r, g, b)  # Top border
+        self.fill_rect(self.w - w, 0, w, self.h, r, g, b)  # Right border
+        self.fill_rect(0, 0, self.w, w, r, g, b)  # Bottom border
 
-        # If line intersects the lower bound within the right and left bounds
-        if R >= fy(D) >= L:
-            p1 = (fy(D), D)
-
-            # Find second intersection among upper, right, and left bounds
-            if R >= fy(U) >= L:
-                p2 = (fy(U), U)
-            elif U >= fx(R) >= D:
-                p2 = (R, fx(R))
-            else:
-                p2 = (L, fx(L))
-
-        # If line intersects left bound between upper and lower
-        elif U >= fx(L) >= D:
-            p1 = (L, fx(L))
-
-            # Find second intersection among upper and right bounds since it wasn't down
-            if R >= fy(U) >= L:
-                p2 = (fy(U), U)
-            else:
-                p2 = (R, fx(R))
-
-        # Since the line MUST intersect two sides, if it didn't intersect either left or lower, it must be upper and right
+    def background(self, r, g: float = None, b: float = None):
+        if self.__version__ != 1.1:
+            raise ValueError(f"{self.__class__.__name__} (v {self.__version__}) does not support background coloring")
         else:
-            p1 = (R, fx(R))
-            p2 = (fy(U), U)
+            lines = self._buffer.split("\n")
+            start = lines.index(PostscriptPy.__BGST)
+            end = lines.index(PostscriptPy.__BGEND)
+            self._buffer = "\n".join(lines[:start + 1]) + "\n"
+            self.color(r, g, b)
 
-        return p1, p2
-
-    def get_bounding(self, p1, p2, theta, U=None, D=0, L=0, R=None):
-
-        if U is None:
-            U = self.h
-        if R is None:
-            R = self.w
-
-        from math import pi
-
-        # If angle is between 0° and 135°, then the largest y value is considered the 'first' point
-        if theta < 3 * pi / 4:
-            if p1[1] < p2[1]:
-                p1, p2 = p2[:], p1[:]
-
-        # If angle is between 135° and 225°, then 'first' is lowest x
-        elif theta < 5 * pi / 4:
-            if p1[0] > p2[0]:
-                p1, p2 = p2[:], p1[:]
-
-        # If angle between 225° and 305°, then 'first' is lowest y
-        elif theta < 7 * pi / 4:
-            if p1[1] > p2[1]:
-                p1, p2 = p2[:], p1[:]
-
-        # Otherwise, if angle between 305° and 360°, then 'first' is largest x
-        else:
-            if p1[0] < p2[0]:
-                p1, p2 = p2[:], p1[:]
-
-        # Vertices of bounding box
-        vertices = [(L, D), (L, U), (R, U), (R, D)]
-
-        # Find where p1 fits in, in cyclic order
-        if p1[1] == D:
-            i1 = 4
-        elif p1[0] == L:
-            i1 = 1
-        elif p1[1] == U:
-            i1 = 2
-        else:
-            i1 = 3
-
-        # Find where p2 fits in, in cyclic order
-        if p2[1] == D:
-            i2 = 4
-        elif p2[0] == L:
-            i2 = 1
-        elif p2[1] == U:
-            i2 = 2
-        else:
-            i2 = 3
-
-        if i2 < i1:
-            vertices.insert(i1, p1)
-            vertices.insert(i2, p2)
-            i1 += 1
-        else:
-            vertices.insert(i2, p2)
-            vertices.insert(i1, p1)
-            i2 += 1
-
-        polys = []
-
-        i = i1
-        while i != i2:
-            polys.append(vertices[i])
-            i = (i + 1) % 6
-
-        polys.append(vertices[i2])
-        return polys
-
-    def out(self, file=None):
-
-        if file is None:
-            n = 0
-            for p in self.path_out.iterdir():
-                if p.is_file() and str(p).split('/')[-1].startswith("pspy"):
-                    n = max(n, int(str(p).split('/')[-1].split(".")[0][4:]))
-            file = str(self.path_out.joinpath(f"pspy{n + 1}.eps"))
-
-        self._buffer += "showpage\n%EOF"
-        with open(file, "w") as psfile:
-            psfile.write(self._buffer)
-
-    def draw(self):
-        file = str(self.path_temp.joinpath(f"image.eps"))
-        self.out(file)
-        system(f"open -a Preview {file}")
+            # This should not depend on fill rect being defined
+            self._buffer += ("newpath\n" +
+                             "0 0 moveto\n" +
+                             f"{self.w} 0 lineto\n" +
+                             f"{self.w} {self.h} lineto\n" +
+                             f"0 {self.h} lineto\n" +
+                             "closepath\n" +
+                             "fill\n")
+            self._buffer += "\n".join(lines[end:]) + "\n"
 
     def translate(self, x, y):
         self._buffer += f"{x} {y} translate\n"
 
-    def setlinejoin(self, value=1):
+    def setstdline(self, width: float = 2):
+        """
+        Sets the line settings to 'standard' of linejoin 1, linecap 1, and linewidth 2
+        unless a different width parameter is provided.
+
+        :param width: optional width
+        :return: None
+        """
+        self.setlinejoin()
+        self.setlinecap()
+        self.setlinewidth(width)
+
+    def setlinejoin(self, value: int = 1):
         self._buffer += f"{value} setlinejoin\n"
 
-    def setlinecap(self, value=1):
+    def setlinecap(self, value: int = 1):
         self._buffer += f"{value} setlinecap\n"
 
     def setlinewidth(self, value):
         self._buffer += f"{value} setlinewidth\n"
 
-    def color(self, r, g=None, b=None):
+    def color(self, r: float, g: float = None, b: float = None):
         if g is None or r == g == b:
             gray = round(r / 255, 3)
             if gray != self._color:
                 self._buffer += f"{gray} setgray\n"
                 self._color = gray
         else:
-            r = round(r / 255, 3)
-            g = round(g / 255, 3)
-            b = round(b / 255, 3)
+            r, g, b = tuple(round(a / 255, 3) for a in (r, g, b))
             if (r, g, b) != self._color:
                 self._buffer += f"{r} {g} {b} setrgbcolor\n"
                 self._color = (r, g, b)
 
     def newpath(self, *args):
         self._buffer += "newpath\n"
-
         if args:
             if len(args) == 2:
-                x = str(args[0])
-                y = str(args[1])
-                self._buffer += (" " * (4 - len(x))) + x + (" " * (4 - len(y))) + y + " moveto\n"
+                self._buffer += f"{args[0]} {args[1]} moveto\n"
             else:
                 raise ValueError(f"Invalid {PostscriptPy.newpath.__name__} args: {args}")
 
@@ -539,15 +778,31 @@ class PostscriptPy:
         self._buffer += f"{theta} rotate\n"
 
     def draw_line(
-            self, x: int | float, y: int | float, r: int = None, g: int = None, b: int = None,
-            *, x2: int | float = None, y2: int | float = None, length: int = None, theta: int | float = None
+            self,
+            x: float, y: float,         # Initial coordinates (required)
+            x2: float = None, y2: float = None,     # Second coordinates (optional)
+            *color,
+            length: int = None, theta: float = None     # Length and direction (optional)
     ):
+        """
+        Draws a line starting at (x, y) and either ending at (x2, y2) or calculating
+        a second pair of coordinates using length and angle and drawing there. Either
+        the second pair of coordinates or length AND angle are required.
+
+        :param x: starting x
+        :param y: starting y
+        :param x2: optional end x
+        :param y2: optional end y
+        :param color: color of line
+        :param length: optional length of line
+        :param theta: optional angle of line
+        """
         if isinstance(length, int) and isinstance(theta, (int, float)):
-            x2 = x + int(length * cos(radians(theta)))
-            y2 = y + int(length * sin(radians(theta)))
-        if isinstance(x2, int | float) and isinstance(y2, int | float):
-            if isinstance(r, int | float):
-                self.color(r, g, b)
+            x2 = x + length * cos(radians(theta))
+            y2 = y + length * sin(radians(theta))
+        if x2 is not None and y2 is not None:
+            if color:
+                self.color(*color)
             self._buffer += f"newpath\n" \
                             f"{x} {y} moveto\n" \
                             f"{x2} {y2} lineto\n" \
@@ -556,9 +811,8 @@ class PostscriptPy:
         else:
             raise ValueError("Must provide either end desination or length and angle")
 
-    def draw_rect(self, x: int | float, y: int | float, w: int | float, h: int | float,
-                  r: int = None, g: int = None, b: int = None):
-        if PostscriptPy.RECT not in self.defined:
+    def draw_rect(self, x: float, y: float, w: float, h: float, *color):
+        if PostscriptPy.EPS.RECT not in self._defined:
             self._buffer += (
                     "/draw_rect {\n" +
                     "/h exch def\n" +  # Exchange top two on stack after adding /h results in /h val def
@@ -574,15 +828,14 @@ class PostscriptPy:
                     "stroke\n" +
                     "} def\n"
             )
-            self.defined.add(PostscriptPy.RECT)
+            self._defined.add(PostscriptPy.EPS.RECT)
 
-        if isinstance(r, int | float):
-            self.color(r, g, b)
+        if color:
+            self.color(*color)
         self._buffer += f"{x} {y} {w} {h} draw_rect\n"
 
-    def fill_rect(self, x: int | float, y: int | float, w: int | float, h: int | float,
-                  r: int = None, g: int = None, b: int = None):
-        if PostscriptPy.RECT_FILL not in self.defined:
+    def fill_rect(self, x: float, y: float, w: float, h: float, *color):
+        if PostscriptPy.EPS.RECT_FILL not in self._defined:
             self._buffer += (
                     "/fill_rect {\n" +
                     "/h exch def\n" +  # Exchange top two on stack after adding /h results in /h val def
@@ -598,22 +851,21 @@ class PostscriptPy:
                     "fill\n" +
                     "} def\n"
             )
-            self.defined.add(PostscriptPy.RECT_FILL)
+            self._defined.add(PostscriptPy.EPS.RECT_FILL)
 
-        if isinstance(r, int | float):
-            self.color(r, g, b)
+        if color:
+            self.color(*color)
         self._buffer += f"{x} {y} {w} {h} fill_rect\n"
 
-    def draw_square(self, x: int | float, y: int | float, w: int | float,
-                    r: int = None, g: int = None, b: int = None):
-        if PostscriptPy.SQUARE not in self.defined:
+    def draw_square(self, x: float, y: float, w: float, *color):
+        if PostscriptPy.EPS.SQUARE not in self._defined:
             self._buffer += (
                     "/draw_square {\n" +
-                    "/w exch def\n" +  # Exchange top two on stack after adding /w results in /w val def
+                    "/w exch def\n" +   # Exchange top two on stack after adding /w results in /w val def
                     "/y exch def\n" +
                     "/x exch def\n" +
                     "newpath\n" +
-                    "x y moveto\n" +  # Start bottom left, move counter clockwise
+                    "x y moveto\n" +    # Start bottom left, move counter clockwise
                     "x w add y lineto\n" +
                     "x w add y w add lineto\n" +
                     "x y w add lineto\n" +
@@ -621,15 +873,14 @@ class PostscriptPy:
                     "stroke\n" +
                     "} def\n"
             )
-            self.defined.add(PostscriptPy.SQUARE)
+            self._defined.add(PostscriptPy.EPS.SQUARE)
 
-        if isinstance(r, int | float):
-            self.color(r, g, b)
+        if color:
+            self.color(*color)
         self._buffer += f"{x} {y} {w} draw_square\n"
 
-    def fill_square(self, x: int | float, y: int | float, w: int | float,
-                    r: int = None, g: int = None, b: int = None):
-        if PostscriptPy.SQUARE_FILL not in self.defined:
+    def fill_square(self, x: float, y: float, w: float, *color):
+        if PostscriptPy.EPS.SQUARE_FILL not in self._defined:
             self._buffer += (
                     "/fill_square {\n" +
                     "/w exch def\n" +  # Exchange top two on stack after adding /w results in /w val def
@@ -644,15 +895,15 @@ class PostscriptPy:
                     "fill\n" +
                     "} def\n"
             )
-            self.defined.add(PostscriptPy.SQUARE_FILL)
+            self._defined.add(PostscriptPy.EPS.SQUARE_FILL)
 
-        if isinstance(r, int | float):
-            self.color(r, g, b)
+        if color:
+            self.color(*color)
         self._buffer += f"{x} {y} {w} fill_square\n"
 
-    def __poly(self, vertices: Sequence, r: int = None, g: int = None, b: int = None):
-        if isinstance(r, int | float):
-            self.color(r, g, b)
+    def __poly(self, vertices: Sequence, *color):
+        if color:
+            self.color(*color)
         self._buffer += (
                 f"newpath\n" +
                 f"{vertices[0][0]} {vertices[0][1]} moveto\n"
@@ -661,34 +912,32 @@ class PostscriptPy:
             self._buffer += f"{vertices[i][0]} {vertices[i][1]} lineto\n"
         self._buffer += "closepath\n"
 
-    def draw_poly(self, vertices: Sequence, r: int = None, g: int = None, b: int = None):
-        self.__poly(vertices, r, g, b)
+    def draw_poly(self, vertices: Sequence, *color):
+        self.__poly(vertices, *color)
         self._buffer += "stroke\n"
 
-    def fill_poly(self, vertices: Sequence, r: int = None, g: int = None, b: int = None):
-        self.__poly(vertices, r, g, b)
+    def fill_poly(self, vertices: Sequence, *color):
+        self.__poly(vertices, *color)
         self._buffer += "fill\n"
 
     @staticmethod
-    def center_rect(x: int, y: int, w: int, h: int) -> tuple[int | float, int | float, int, int]:
+    def center_rect(x: float, y: float, w: int, h: int) -> tuple[float, float, int, int]:
         """Helper function to give top left coordinates of rectangle with center at (x, y)"""
         return x - (w / 2), y - (h / 2), w, h
 
     @staticmethod
-    def center_square(x: int, y: int, w: int) -> tuple[int | float, int | float, int]:
+    def center_square(x: float, y: float, w: int) -> tuple[float, float, int]:
         """Helper function to give top left coordinates of square with center at (x, y)"""
         return x - (w / 2), y - (w / 2), w
 
 
-def load(file: str) -> PostscriptPy:
-    ftype = file.split(".")
-    if ftype != "eps":
+def load_postscript_py(file: str) -> PostscriptPy:
+    if not file.endswith(".eps"):
         raise ValueError(f"{file} is not a valid postscript file!")
     else:
         with open(file, "r") as f:
-            for line in f:
-                if line:
-                    if not line.startswith(PostscriptPy.watermark):
-                        raise ValueError(f"Not a valid {PostscriptPy.__class__.__name__} file!")
-                    else:
-                        return PostscriptPy(_load=True, _buffer=f.read())
+            buffer = f.read()
+            if buffer.startswith(PostscriptPy.WATERMARK):
+                return PostscriptPy(_load=True, _buffer=buffer)
+            else:
+                raise ValueError(f"Not a valid {PostscriptPy.__class__.__name__} file!")
