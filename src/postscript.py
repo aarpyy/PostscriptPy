@@ -44,7 +44,6 @@ def read_image(file) -> list[list[tuple[int, int, int]]]:
 
 
 class PostscriptPy(object):
-
     class EPS(Enum):
         RECT = 1
         RECT_FILL = 2
@@ -55,14 +54,18 @@ class PostscriptPy(object):
 
     WATERMARK = "%Made by Postcript.py"
     __WATERMARK_1_1 = WATERMARK + " v1.1"
+    __WATERMARK_1_2 = WATERMARK + " v1.2"
 
     __WATERMARKS = {
         1.0: WATERMARK,
-        1.1: __WATERMARK_1_1
+        1.1: __WATERMARK_1_1,
+        1.2: __WATERMARK_1_2
     }
 
     __BGST = "%BACKGROUNDSTART"
     __BGEND = "%BACKGROUNDEND"
+    __FRST = "%FRAMESTART"
+    __FREND = "%FRAMEEND"
 
     source = Path(__file__).parent.parent
 
@@ -101,6 +104,15 @@ class PostscriptPy(object):
                     self.w = int(size[3])
                     self.h = int(size[4])
 
+            # Remove and keep track of frame separately
+            if self.__version__ >= 1.2:
+                start = lines.index(PostscriptPy.__FRST)
+                end = lines.index(PostscriptPy.__FREND)
+                self._frame = "\n".join(lines[start + 1:end]) + "\n"
+                lines = lines[:start - 1] + lines[end:]
+            else:
+                self._frame = ""
+
             # Don't include %EOF or showpage since those should be last and prevent new stuff from being added easily
             self._buffer = "\n".join(lines[:-2]) + "\n"
         else:
@@ -117,12 +129,13 @@ class PostscriptPy(object):
                 self.w = len(_ref[0])
                 self.h = len(_ref)
 
-            self.__version__ = 1.1
+            self.__version__ = 1.2
             self._buffer = f"{PostscriptPy.__WATERMARKS[self.__version__]}\n" \
                            f"%!PS-Adobe-3.0 EPSF-3.0\n" \
                            f"%%BoundingBox: 0 0 {self.w} {self.h}\n" \
                            f"{PostscriptPy.__BGST}\n" \
                            f"{PostscriptPy.__BGEND}\n"
+            self._frame = ""
 
         self._defined = set()
         self._color = None
@@ -144,6 +157,8 @@ class PostscriptPy(object):
             if not file.endswith(".eps"):
                 file += ".eps"
 
+        if self.__version__ >= 1.2:
+            self._buffer += PostscriptPy.__FRST + "\n" + self._frame + PostscriptPy.__FREND + "\n"
         self._buffer += "showpage\n%EOF"
         with open(file, "w") as psfile:
             psfile.write(self._buffer)
@@ -350,13 +365,13 @@ class PostscriptPy(object):
         # Function used for creating a function of a line for sides of hexagon
         point_slope_y = lambda m, _x, _y: lambda __y: (__y - _y) / m + _x
 
-        width = sqrt(3) * k     # Full width of hexagon
-        half = width / 2        # Half width
-        k1 = k / 2              # Half the height of hexagon
+        width = sqrt(3) * k  # Full width of hexagon
+        half = width / 2  # Half width
+        k1 = k / 2  # Half the height of hexagon
 
-        vertices = [[], []]     # First 2 rows empty
+        vertices = [[], []]  # First 2 rows empty
 
-        x = half                # Center of first hexagon is at (half, k)
+        x = half  # Center of first hexagon is at (half, k)
 
         # Width and height of original images
         p_width = len(pixels1[0])
@@ -704,16 +719,45 @@ class PostscriptPy(object):
         self.rotate(270)
         self.curve_fractal(depth=depth, f_h=f_h, f_l=f_l)
 
-    def frame(self, w: float = 10, r: int = None, g: int = None, b: int = None):
-        self.fill_rect(0, 0, w, self.h, r, g, b)  # Left border
-        self.fill_rect(0, self.h - w, self.w, w, r, g, b)  # Top border
-        self.fill_rect(self.w - w, 0, w, self.h, r, g, b)  # Right border
-        self.fill_rect(0, 0, self.w, w, r, g, b)  # Bottom border
+    def frame(self, w: float = 10, *color):
+        if self.__version__ >= 1.2:
+            if color:
+                self.color(*color)
+            if len(set(color)) == 1:
+                self._frame = f"{round(color[0] / 255, 3)} setgray\n"
+            elif color:
+                r, g, b = tuple(round(a / 255, 3) for a in color)
+                self._frame = f"{r} {g} {b} setrgbcolor\n"
+            else:
+                raise ValueError("Frame must have color!")
+
+            # This should not depend on fill rect being defined
+            self._frame += (
+                    f"newpath\n" +
+                    f"0 0 moveto\n" +
+                    f"0 {self.h} lineto\n" +
+                    f"{self.w} {self.h} lineto\n" +
+                    f"{self.w} 0 lineto\n" +
+                    f"{self.w - w} 0 lineto\n" +
+                    f"{self.w - w} {self.h - w} lineto\n" +
+                    f"{w} {self.h - w} lineto\n" +
+                    f"{w} {w} lineto\n" +
+                    f"{self.w - w} {w} lineto\n" +
+                    f"{self.w - w} 0 lineto\n" +
+                    f"closepath\n" +
+                    f"fill\n"
+            )
+        else:
+            self.frame_layer(w, *color)
+
+    def frame_layer(self, w: float = 10, *color):
+        self.fill_rect(0, 0, w, self.h, *color)             # Left border
+        self.fill_rect(0, self.h - w, self.w, w, *color)    # Top border
+        self.fill_rect(self.w - w, 0, w, self.h, *color)    # Right border
+        self.fill_rect(0, 0, self.w, w, *color)             # Bottom border
 
     def background(self, r, g: float = None, b: float = None):
-        if self.__version__ != 1.1:
-            raise ValueError(f"{self.__class__.__name__} (v {self.__version__}) does not support background coloring")
-        else:
+        if self.__version__ >= 1.1:
             lines = self._buffer.split("\n")
             start = lines.index(PostscriptPy.__BGST)
             end = lines.index(PostscriptPy.__BGEND)
@@ -729,6 +773,8 @@ class PostscriptPy(object):
                              "closepath\n" +
                              "fill\n")
             self._buffer += "\n".join(lines[end:]) + "\n"
+        else:
+            self.fill_rect(0, 0, self.w, self.h, r, g, b)
 
     def translate(self, x, y):
         self._buffer += f"{x} {y} translate\n"
@@ -779,10 +825,10 @@ class PostscriptPy(object):
 
     def draw_line(
             self,
-            x: float, y: float,         # Initial coordinates (required)
-            x2: float = None, y2: float = None,     # Second coordinates (optional)
+            x: float, y: float,  # Initial coordinates (required)
+            x2: float = None, y2: float = None,  # Second coordinates (optional)
             *color,
-            length: int = None, theta: float = None     # Length and direction (optional)
+            length: int = None, theta: float = None  # Length and direction (optional)
     ):
         """
         Draws a line starting at (x, y) and either ending at (x2, y2) or calculating
@@ -861,11 +907,11 @@ class PostscriptPy(object):
         if PostscriptPy.EPS.SQUARE not in self._defined:
             self._buffer += (
                     "/draw_square {\n" +
-                    "/w exch def\n" +   # Exchange top two on stack after adding /w results in /w val def
+                    "/w exch def\n" +  # Exchange top two on stack after adding /w results in /w val def
                     "/y exch def\n" +
                     "/x exch def\n" +
                     "newpath\n" +
-                    "x y moveto\n" +    # Start bottom left, move counter clockwise
+                    "x y moveto\n" +  # Start bottom left, move counter clockwise
                     "x w add y lineto\n" +
                     "x w add y w add lineto\n" +
                     "x y w add lineto\n" +
