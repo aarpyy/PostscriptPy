@@ -149,8 +149,8 @@ class PostscriptPy(object):
         if file is None:
             n = 0
             for p in self.__path_out.iterdir():
-                if p.is_file() and str(p).split('/')[-1].startswith("pspy"):
-                    n = max(n, int(str(p).split('/')[-1].split(".")[0][4:]))
+                if p.is_file() and p.name.startswith("pspy"):
+                    n = max(n, int(p.name.split(".")[0][4:]))
             file = str(self.__path_out.joinpath(f"pspy{n + 1}.eps"))
         elif "/" not in file:
             file = str(self.__path_out.joinpath(file))
@@ -187,6 +187,25 @@ class PostscriptPy(object):
         if colors:
             eps.background(*colors)
         return eps
+
+    @classmethod
+    def join(cls, file1, file2, *files):
+        buffer = ""
+        for f in (file1, file2, *files):
+            if not buffer:
+                with open(str(f), "r") as epsfile:
+                    buffer += epsfile.read()[:-1]
+            else:
+                with open(str(f), "r") as epsfile:
+                    buffer += epsfile.read()[3:-1]
+        n = 0
+        for f in PostscriptPy.__path_out.iterdir():
+            if f.is_file() and f.name.startswith("joined"):
+                n = max(n, int(f.name.split(".")[0][6:]))
+
+        file = str(PostscriptPy.__path_out.joinpath(f"joined{n + 1}.eps"))
+        with open(file, "w") as outfile:
+            outfile.write(buffer)
 
     @staticmethod
     def from_image(fp: str):
@@ -455,7 +474,7 @@ class PostscriptPy(object):
                 # Noise for how much of image 2 to include, noise function returns between -0.5 and 0.5
                 v1 = (noise((x / w, y / h)) + 0.5) * grad
 
-                colors = tuple(a * v1 + b * (1 - v1) for a, b in zip(colors1, colors2))
+                colors = tuple(a * (1 - v1) + b * v1 for a, b in zip(colors1, colors2))
 
                 v2 = sum(colors) / 765
                 if not neg:
