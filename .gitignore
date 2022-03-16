@@ -7,3 +7,9 @@ main.py
 images/*
 .DS_Store
 src/__pycache__/
+Archive.zip
+tempgif.zip
+tempgif/
+png_to_gif.gif
+temp1.png
+temp.eps

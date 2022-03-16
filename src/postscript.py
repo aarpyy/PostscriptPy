@@ -149,7 +149,7 @@ class PostscriptPy(object):
         if file is None:
             n = 0
             for p in self.__path_out.iterdir():
-                if p.is_file() and p.name.startswith("pspy"):
+                if p.is_file() and p.name.startswith("pspy") and p.name.endswith(".eps"):
                     n = max(n, int(p.name.split(".")[0][4:]))
             file = str(self.__path_out.joinpath(f"pspy{n + 1}.eps"))
         elif "/" not in file:
@@ -167,6 +167,41 @@ class PostscriptPy(object):
         file = str(self.__path_temp.joinpath(f"image.eps"))
         self.out(file)
         system(f"open -a Preview {file}")
+
+    def convert(self, size: float | tuple[int, int] = None, mode="png", outfile=None):
+        if outfile is None:
+            n = 0
+            for f in self.__path_out.iterdir():
+                if f.is_file() and f.name.endswith(".png") and f.name.startswith("pspy"):
+                    n = max(n, int(f.name.split(".")[0][4:]))
+            outfile = str(self.__path_out.joinpath(f"pspy{n + 1}.png").absolute())
+
+        path_self = str(self.__path_temp.joinpath("converttemp.eps").absolute())
+
+        # Don't include watermark
+        with open(path_self, "w") as out:
+            firstline = str(self).index("\n")
+            out.write(str(self)[firstline + 1:])
+
+        cmd = "gs -dSAFER -dBATCH -dNOPAUSE -dEPSCrop "
+        if size is None:
+            cmd += f"-r{self.w}x{self.h} "
+        elif isinstance(size, tuple):
+            cmd += f"-r{size[0]}x{size[1]} "
+        else:
+            cmd += f"-r{self.w * size}x{self.h * size} "
+
+        match mode:
+            case "png":
+                cmd += "-sDEVICE=pngalpha "
+            case "jpg" | "jpeg":
+                cmd += "-sDEVICE=jpg "
+            case _:
+                raise ValueError(f"Unrecognized image format: {mode}")
+
+        cmd += f"-sOutputFile={outfile} {path_self}"
+        print(cmd)
+        system(cmd)
 
     @property
     def width(self):
