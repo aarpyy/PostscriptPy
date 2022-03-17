@@ -1,9 +1,8 @@
 .idea/
-out/
-temp/
+out/*
+temp/*
 venv/
 Pipfile
-images/*
 .DS_Store
 src/__pycache__/
 Archive.zip
