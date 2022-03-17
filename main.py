@@ -1,5 +1,7 @@
-from postscript import *
+from src.postscript import *
 from PIL import Image
+from perlin_noise import PerlinNoise
+import subprocess
 from numpy import shape
 
 
@@ -27,20 +29,20 @@ def blend():
     pixels = "mbdtf4.jpeg"       # Pixels
     sword = "mbdtf6.jpg"        # Sword
 
-    gradiant_up(dancer, pixels)
-    gradiant_down(pixels, dancer)
-    gradiant_up(pixels, sword)
-    gradiant_down(sword, pixels)
-    gradiant_up(sword, dancer)
-    gradiant_down(dancer, sword)
+    gradiant_up(dancer, pixels)         # All of dancer to before half
+    gradiant_down(pixels, dancer)       # Half, to before all pixels
+
+    gradiant_up(pixels, sword)          # All pixels, to before half
+    gradiant_down(sword, pixels)        # Half, to before all sword
+
+    gradiant_up(sword, dancer)          # All sword, to before half
+    gradiant_down(dancer, sword)        # Half, to before all dancer
 
 
 def gif():
     frames = []
     for i in range(1, 67):
         img = Image.open(f"tempgif/pspy{i}.png")  # type: Image.Image
-        # img = img.resize((img.width // 8, img.height // 8), Image.ANTIALIAS)
-        # img.save(f"tempgif/pspy{i}.png")
         frames.append(img)
         print(f"\rLoaded frame {i}", end="")
 
@@ -70,17 +72,8 @@ if __name__ == "__main__":
     # PostscriptPy.join(*to_join)
     # for i in range(1, 67):
     #     eps = load_postscript_py(f"out/pspy{i}.eps")
-    #     eps.convert(2, outfile=f"tempgif/pspy{i}.png")
-    same = set()
-    temp = Path(__file__).parent.joinpath("tempgif")
-    for file in temp.iterdir():
-        if file.is_file():
-            for file2 in temp.iterdir():
-                if file2.is_file() and file.name != file2.name:
-                    if not system(f"diff -q {file} {file2} > /dev/null"):
-                        same.add(tuple(sorted((file.name, file2.name))))
-
-    print(same)
+    #     eps.convert(0.5, outfile=f"tempgif/pspy{i}.png")
+    make_gif("tempgif")
     # img = Image.open("./out/pspy1.eps")     # type: Image.Image
     # jpg = img.convert()
     # jpg.save("temp1.png", lossless=True)

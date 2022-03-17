@@ -1,6 +1,10 @@
+import subprocess
+import re
+import platform
+import sys
+
 from enum import Enum
 from pathlib import Path
-from os import system
 from PIL import Image
 from random import randrange, uniform
 from math import sin, cos, radians, atan, tan, sqrt, floor, ceil
@@ -10,28 +14,30 @@ from perlin_noise import PerlinNoise
 from numpy import shape
 
 
-def read_image(file) -> list[list[tuple[int, int, int]]]:
+def read_image(fp: str) -> list[list[tuple[int, int, int]]]:
     """
     Returns a list of lines where each line contains
     a tuple (r, g, b) for each pixel in the corresponding row of the input image.
 
-    :param file: image
+    :param fp: image
     :return: string with pixel data
     """
 
+    file = Path(fp)
+
     # If relative path, check to see if it's in the images folder
-    if "/" not in file:
+    if not file.is_absolute():
         images = PostscriptPy.source.joinpath("images")
         if not images.joinpath(file).is_file():
             raise ValueError("Relative path to image not found")
         else:
-            file = str(images.joinpath(file))
+            file = images.joinpath(fp)
 
-    img = Image.open(file)  # type: Image.Image
+    img = Image.open(str(file))  # type: Image.Image
 
     buffer = []
 
-    if file.endswith(".png"):
+    if fp.endswith(".png"):
         # Remove alpha value since postscript doesn't have alphas
         data = list(pixel[:-1] for pixel in img.getdata())
     else:
@@ -41,6 +47,33 @@ def read_image(file) -> list[list[tuple[int, int, int]]]:
     for i in range(img.height):
         buffer.append(data[i * w:(i + 1) * w])
     return buffer
+
+
+def make_gif(fp: str, save: str = None, pattern: str = None):
+    path = Path(fp)
+    if not path.is_absolute():
+        path = PostscriptPy.source.joinpath(path)
+
+    if pattern is None:
+        files = sorted(list(path.iterdir()))
+    else:
+        r = re.compile(pattern)
+        files = sorted(list(f for f in path.iterdir() if r.match(f.name)))
+
+    frames = []
+    for file in files:
+        frames.append(Image.open(file))
+    if save is None:
+        n = 0
+        for f in Path(".").iterdir():
+            if f.name.startswith("gif"):
+                n = max(n, int(f.name.split(".")[0][3:]))
+        save = f"gif{n + 1}.gif"
+
+    frames[0].save(save, format='GIF',
+                   append_images=frames[1:],
+                   save_all=True,
+                   duration=10 * len(frames), loop=0)
 
 
 class PostscriptPy(object):
@@ -144,31 +177,40 @@ class PostscriptPy(object):
     def __str__(self):
         return self._buffer
 
-    def out(self, file=None):
+    def out(self, fp=None):
 
-        if file is None:
+        if fp is None:
             n = 0
             for p in self.__path_out.iterdir():
                 if p.is_file() and p.name.startswith("pspy") and p.name.endswith(".eps"):
                     n = max(n, int(p.name.split(".")[0][4:]))
-            file = str(self.__path_out.joinpath(f"pspy{n + 1}.eps"))
-        elif "/" not in file:
-            file = str(self.__path_out.joinpath(file))
-            if not file.endswith(".eps"):
-                file += ".eps"
+            fp = str(self.__path_out.joinpath(f"pspy{n + 1}.eps"))
+        elif not (file := Path(fp)).is_absolute():
+            fp = str(self.__path_out.joinpath(file))
+            if not fp.endswith(".eps"):
+                fp += ".eps"
 
         if self.__version__ >= 1.2:
             self._buffer += PostscriptPy.__FRST + "\n" + self._frame + PostscriptPy.__FREND + "\n"
         self._buffer += "showpage\n%EOF"
-        with open(file, "w") as psfile:
+        with open(fp, "w") as psfile:
             psfile.write(self._buffer)
 
     def draw(self):
         file = str(self.__path_temp.joinpath(f"image.eps"))
         self.out(file)
-        system(f"open -a Preview {file}")
+        match platform.system():
+            case "Windows":
+                cp = subprocess.run(["gswin64c", "-sDEVICE=display", f"-r{self.w}x{self.h}", file], shell=True)
+            case "Darwin":
+                cp = subprocess.run(["open", "-a", "Preview", file], shell=True)
+            case _:
+                raise FileNotFoundError(f"Bad OS for rendering postscript with "
+                                        f"default application: {platform.system()}")
+        if cp.returncode:
+            print(f"Failed to open {file}, exited with {cp.returncode}", file=sys.stderr)
 
-    def convert(self, size: float | tuple[int, int] = None, mode="png", outfile=None):
+    def convert(self, size: float | tuple[int, int] = 1, mode="png", outfile=None):
         if outfile is None:
             n = 0
             for f in self.__path_out.iterdir():
@@ -176,32 +218,38 @@ class PostscriptPy(object):
                     n = max(n, int(f.name.split(".")[0][4:]))
             outfile = str(self.__path_out.joinpath(f"pspy{n + 1}.png").absolute())
 
-        path_self = str(self.__path_temp.joinpath("converttemp.eps").absolute())
+        path_self = str(self.__path_temp.joinpath("convert_temp.eps").absolute())
 
         # Don't include watermark
         with open(path_self, "w") as out:
-            firstline = str(self).index("\n")
-            out.write(str(self)[firstline + 1:])
+            out.write(self._buffer[self._buffer.index("\n") + 1:] + "showpage\n%EOF")
 
-        cmd = "gs -dSAFER -dBATCH -dNOPAUSE -dEPSCrop "
-        if size is None:
-            cmd += f"-r{self.w}x{self.h} "
-        elif isinstance(size, tuple):
-            cmd += f"-r{size[0]}x{size[1]} "
+        match platform.system():
+            case "Windows":
+                gs = "gswin64c"
+            case "Darwin":
+                gs = "gs"
+            case _:
+                raise FileNotFoundError(f"Bad OS for rendering postscript with "
+                                        f"default application: {platform.system()}")
+
+        cmd = [gs, "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dEPSCrop"]
+        if isinstance(size, tuple):
+            cmd.append(f"-r{size[0]}x{size[1]}")
         else:
-            cmd += f"-r{self.w * size}x{self.h * size} "
+            cmd.append(f"-r{self.w * size}x{self.h * size}")
 
         match mode:
             case "png":
-                cmd += "-sDEVICE=pngalpha "
+                cmd.append("-sDEVICE=pngalpha")
             case "jpg" | "jpeg":
-                cmd += "-sDEVICE=jpg "
+                cmd.append("-sDEVICE=jpg")
             case _:
                 raise ValueError(f"Unrecognized image format: {mode}")
 
-        cmd += f"-sOutputFile={outfile} {path_self}"
-        print(cmd)
-        system(cmd)
+        cmd.append(f"-sOutputFile={outfile}")
+        cmd.append(path_self)
+        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL)
 
     @property
     def width(self):
@@ -241,6 +289,30 @@ class PostscriptPy(object):
         file = str(PostscriptPy.__path_out.joinpath(f"joined{n + 1}.eps"))
         with open(file, "w") as outfile:
             outfile.write(buffer)
+
+    @classmethod
+    def gradiant_up(cls, file1, file2, **kwargs):
+        # Computes gradiant from entirely file1 to almost full blend of file1 and file2
+        grad = 0.0
+        while grad < 1.0:
+            cls.from_image_blend(file1, file2, grad=grad, **kwargs).out()
+            grad += 0.1
+
+    @classmethod
+    def gradiant_down(cls, file1, file2, **kwargs):
+        # Computes gradiant from full blend file1 and file2 to full file1
+        grad = 1.0
+        while grad > 0.0:
+            cls.from_image_blend(file1, file2, grad=grad, **kwargs).out()
+            grad -= 0.1
+
+    @classmethod
+    def blend(cls, file1, file2, *files, **kwargs):
+        files = [file1, file2, *files]
+        n_files = len(files)
+        for i in range(n_files):
+            cls.gradiant_up(files[i], files[(i + 1) % n_files], **kwargs)
+            cls.gradiant_down(files[(i + 1) % n_files], files[i], **kwargs)
 
     @staticmethod
     def from_image(fp: str):
