@@ -294,14 +294,14 @@ class PostscriptPy(object):
     def gradiant_up(cls, file1, file2, **kwargs):
         # Computes gradiant from entirely file1 to almost full blend of file1 and file2
         grad = 0.0
-        while grad < 1.0:
+        while grad < 0.5:
             cls.from_image_blend(file1, file2, grad=grad, **kwargs).out()
             grad += 0.1
 
     @classmethod
     def gradiant_down(cls, file1, file2, **kwargs):
         # Computes gradiant from full blend file1 and file2 to full file1
-        grad = 1.0
+        grad = 0.5
         while grad > 0.0:
             cls.from_image_blend(file1, file2, grad=grad, **kwargs).out()
             grad -= 0.1
@@ -489,7 +489,8 @@ class PostscriptPy(object):
             raise ValueError("Images are not the same shape!")
 
         # Function used for creating a function of a line for sides of hexagon
-        point_slope_y = lambda m, _x, _y: lambda __y: (__y - _y) / m + _x
+        def point_slope_y(m, _x, _y):
+            return lambda __y: (__y - _y) / m + _x
 
         width = sqrt(3) * k  # Full width of hexagon
         half = width / 2  # Half width
