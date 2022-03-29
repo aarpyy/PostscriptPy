@@ -294,17 +294,17 @@ class PostscriptPy(object):
     def gradiant_up(cls, file1, file2, **kwargs):
         # Computes gradiant from entirely file1 to almost full blend of file1 and file2
         grad = 0.0
-        while grad < 0.5:
+        while grad < 0.75:
             cls.from_image_blend(file1, file2, grad=grad, **kwargs).out()
-            grad += 0.1
+            grad += 0.15
 
     @classmethod
     def gradiant_down(cls, file1, file2, **kwargs):
         # Computes gradiant from full blend file1 and file2 to full file1
-        grad = 0.5
+        grad = 0.75
         while grad > 0.0:
             cls.from_image_blend(file1, file2, grad=grad, **kwargs).out()
-            grad -= 0.1
+            grad -= 0.15
 
     @classmethod
     def blend(cls, file1, file2, *files, **kwargs):

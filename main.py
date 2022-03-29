@@ -59,20 +59,20 @@ if __name__ == "__main__":
     # eps.background(40, 40, 40)
     # eps.draw()
     # noise = PerlinNoise(octaves=4, seed=1)
-    PostscriptPy.blend("mbdtf4.jpeg", "mbdtf5.png", k=8, noise=noise, background=(0, 0, 0))
+
+    PostscriptPy.blend("mbdtf4.jpeg", "mbdtf5.png", "mbdtf6.jpg", k=8, noise=noise, background=(0, 0, 0))
     out = PostscriptPy.source.joinpath("out")
 
-    
-    # to_join = []
-    # j = 1
-    # while (file := out.joinpath(f"pspy{j}.eps")).is_file():
-    #     to_join.append(str(file))
-    #     j += 1
-    # i = 1
-    # for f in file:
-    #     eps = load_postscript_py(f)
-    #     eps.convert(0.5, outfile=f"tempgif/pspy{i}.png")
-    #     i += 1
+    to_join = []
+    j = 1
+    while (file := out.joinpath(f"pspy{j}.eps")).is_file():
+        to_join.append(str(file))
+        j += 1
+    i = 1
+    for f in to_join:
+        eps = load_postscript_py(f)
+        eps.convert(0.5, outfile=f"tempgif/pspy{i}.png")
+        i += 1
 
 
     # make_gif("tempgif")
