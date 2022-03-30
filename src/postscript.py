@@ -3,15 +3,22 @@ import re
 import platform
 import sys
 
-from enum import Enum
+from enum import Enum, auto
 from pathlib import Path
 from PIL import Image
 from random import randrange, uniform
 from math import sin, cos, radians, atan, tan, sqrt, floor, ceil
 from typing import Sequence, Callable
+from os import PathLike
 from collections import deque
 from perlin_noise import PerlinNoise
 from numpy import shape
+
+
+Fonts = [
+    "Helvetica", "Helvetica-Bold", "Times-Roman", "Times-Bold", "Times-Italic", "Times-Bolditalic",
+    "Courier", "Courier-Bold", "Optima"
+]
 
 
 def read_image(fp: str) -> list[list[tuple[int, int, int]]]:
@@ -49,7 +56,40 @@ def read_image(fp: str) -> list[list[tuple[int, int, int]]]:
     return buffer
 
 
-def make_gif(fp: str, save: str = None, pattern: str = None):
+def make_gif_magick(
+        save: str | PathLike[str] = None,
+        pattern: str | PathLike[str] = None,
+        options: list[str, ...] = None,
+        cwd: str | PathLike[str] = None,
+        sort_key=None
+):
+
+    path = PostscriptPy.source.joinpath("out")
+    if pattern is None:
+        files = list(str(f.name) for f in path.iterdir())
+    else:
+        r = re.compile(pattern)
+        files = list(str(f.name) for f in path.iterdir() if r.match(f.name))
+
+    if sort_key is not None:
+        files = sorted(files, key=sort_key)
+
+    if options is None:
+        options = ["-delay", "20", "-density", "50"]
+    if save is None:
+        save = str(path.joinpath("eps.gif"))
+    if cwd is None:
+        cwd = path
+
+    cmd = ["convert"]
+    cmd.extend(options)
+    cmd.extend(files)
+    cmd.append(save)
+
+    subprocess.run(cmd, cwd=cwd)
+
+
+def make_gif_PIL(fp: str, save: str = None, pattern: str = None):
     path = Path(fp)
     if not path.is_absolute():
         path = PostscriptPy.source.joinpath(path)
@@ -77,11 +117,11 @@ def make_gif(fp: str, save: str = None, pattern: str = None):
 
 
 class PostscriptPy(object):
-    class EPS(Enum):
-        RECT = 1
-        RECT_FILL = 2
-        SQUARE = 3
-        SQUARE_FILL = 4
+    class Functions(Enum):
+        RECT = auto()
+        RECT_FILL = auto()
+        SQUARE = auto()
+        SQUARE_FILL = auto()
 
     CURRENT_VERSION = 1.1
 
@@ -173,6 +213,8 @@ class PostscriptPy(object):
         self._defined = set()
         self._color = None
         self._ref = _ref
+        self._font = None
+        self._scale = None
 
     def __str__(self):
         return self._buffer
@@ -201,9 +243,9 @@ class PostscriptPy(object):
         self.out(file)
         match platform.system():
             case "Windows":
-                cp = subprocess.run(["gswin64c", "-sDEVICE=display", f"-r{self.w}x{self.h}", file], shell=True)
+                cp = subprocess.run(["gswin64c", "-sDEVICE=display", f"-r{self.w}x{self.h}", file])
             case "Darwin":
-                cp = subprocess.run(["open", "-a", "Preview", file], shell=True)
+                cp = subprocess.run(["open", "-a", "Preview", file])
             case _:
                 raise FileNotFoundError(f"Bad OS for rendering postscript with "
                                         f"default application: {platform.system()}")
@@ -533,6 +575,9 @@ class PostscriptPy(object):
 
         # Height set also so that hexagons fit neatly
         h = ceil(y - k1)
+        print(f"rows (calc): {(p_height - k) // (3 * k1)}")
+        print(f"rows (len): {len(vertices)}")
+        print(f"h / k1: {h/k1}")
 
         eps = PostscriptPy.stdcanvas(w, h, *background)
 
@@ -918,6 +963,9 @@ class PostscriptPy(object):
         self.setlinecap()
         self.setlinewidth(width)
 
+    def setstdfont(self):
+        self.setfont("Times-Roman", "4.0")
+
     def setlinejoin(self, value: int = 1):
         self._buffer += f"{value} setlinejoin\n"
 
@@ -949,6 +997,24 @@ class PostscriptPy(object):
 
     def rotate(self, theta):
         self._buffer += f"{theta} rotate\n"
+
+    def setfont(self, font, scale):
+        self._buffer += (f"/{font} findfont\n"
+                         f"{scale} scalefont\n"
+                         f"setfont\n")
+        self._font = font
+        self._scale = scale
+
+    def text(self, s, x, y, font=None, scale=None, gray=0.0):
+        if font is not None and scale is not None and (font != self._font or scale != self._scale):
+            self.setfont(font, scale)
+        elif self._font is None:
+            raise ValueError("Must set a font!")
+        else:
+            self.color(gray)
+            self._buffer += (f"newpath\n"
+                             f"{x} {y} moveto\n"
+                             f"({s}) show\n")
 
     def draw_line(
             self,
@@ -985,7 +1051,7 @@ class PostscriptPy(object):
             raise ValueError("Must provide either end desination or length and angle")
 
     def draw_rect(self, x: float, y: float, w: float, h: float, *color):
-        if PostscriptPy.EPS.RECT not in self._defined:
+        if PostscriptPy.Functions.RECT not in self._defined:
             self._buffer += (
                     "/draw_rect {\n" +
                     "/h exch def\n" +  # Exchange top two on stack after adding /h results in /h val def
@@ -1001,14 +1067,14 @@ class PostscriptPy(object):
                     "stroke\n" +
                     "} def\n"
             )
-            self._defined.add(PostscriptPy.EPS.RECT)
+            self._defined.add(PostscriptPy.Functions.RECT)
 
         if color:
             self.color(*color)
         self._buffer += f"{x} {y} {w} {h} draw_rect\n"
 
     def fill_rect(self, x: float, y: float, w: float, h: float, *color):
-        if PostscriptPy.EPS.RECT_FILL not in self._defined:
+        if PostscriptPy.Functions.RECT_FILL not in self._defined:
             self._buffer += (
                     "/fill_rect {\n" +
                     "/h exch def\n" +  # Exchange top two on stack after adding /h results in /h val def
@@ -1024,14 +1090,14 @@ class PostscriptPy(object):
                     "fill\n" +
                     "} def\n"
             )
-            self._defined.add(PostscriptPy.EPS.RECT_FILL)
+            self._defined.add(PostscriptPy.Functions.RECT_FILL)
 
         if color:
             self.color(*color)
         self._buffer += f"{x} {y} {w} {h} fill_rect\n"
 
     def draw_square(self, x: float, y: float, w: float, *color):
-        if PostscriptPy.EPS.SQUARE not in self._defined:
+        if PostscriptPy.Functions.SQUARE not in self._defined:
             self._buffer += (
                     "/draw_square {\n" +
                     "/w exch def\n" +  # Exchange top two on stack after adding /w results in /w val def
@@ -1046,14 +1112,14 @@ class PostscriptPy(object):
                     "stroke\n" +
                     "} def\n"
             )
-            self._defined.add(PostscriptPy.EPS.SQUARE)
+            self._defined.add(PostscriptPy.Functions.SQUARE)
 
         if color:
             self.color(*color)
         self._buffer += f"{x} {y} {w} draw_square\n"
 
     def fill_square(self, x: float, y: float, w: float, *color):
-        if PostscriptPy.EPS.SQUARE_FILL not in self._defined:
+        if PostscriptPy.Functions.SQUARE_FILL not in self._defined:
             self._buffer += (
                     "/fill_square {\n" +
                     "/w exch def\n" +  # Exchange top two on stack after adding /w results in /w val def
@@ -1068,7 +1134,7 @@ class PostscriptPy(object):
                     "fill\n" +
                     "} def\n"
             )
-            self._defined.add(PostscriptPy.EPS.SQUARE_FILL)
+            self._defined.add(PostscriptPy.Functions.SQUARE_FILL)
 
         if color:
             self.color(*color)
