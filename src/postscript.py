@@ -15,6 +15,11 @@ from perlin_noise import PerlinNoise
 from numpy import shape
 
 
+__all__ = [
+    "Fonts", "read_image", "make_gif_magick", "make_gif_PIL", "PostscriptPy", "load_postscript_py"
+]
+
+
 Fonts = [
     "Helvetica", "Helvetica-Bold", "Times-Roman", "Times-Bold", "Times-Italic", "Times-Bolditalic",
     "Courier", "Courier-Bold", "Optima"

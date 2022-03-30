@@ -1,70 +1,66 @@
 from src.postscript import *
 from functools import reduce
 from random import choices
+from math import floor, ceil, sqrt
 
 
-dancer = "mbdtf5.png"           # Dancer
+dancer = "mbdtf5.jpeg"          # Dancer
 pixels = "mbdtf4.jpeg"          # Pixels
 sword = "mbdtf6.jpg"            # Sword
 
 
 def main():
 
+    def point_slope_y(_m, _x, _y):
+        return lambda __y: (__y - _y) / _m + _x
+
     # Constants
     k = 10
     background = (255, 255, 255)
-    # t = 10
 
     pixelsd = read_image(dancer)
     pixelsp = read_image(pixels)
     pixelss = read_image(sword)
 
-    width = sqrt(3) * k  # Full width of hexagon
-    half = width / 2  # Half width
-    k1 = k / 2  # Half the height of hexagon
-
-    vertices = [[], []]  # First 2 rows empty
-
-    x = half  # Center of first hexagon is at (half, k)
-
     # Width and height of original images
     p_width = len(pixelsd[0])
     p_height = len(pixelsd)
 
-    # While the right edge of the current hex is within bounds of image, increment
-    # x by the width of hexagon to find the number of whole hexagons that fit
-    while x + half <= p_width:
-        vertices[0].append((x, k))
-        x += width
+    width = sqrt(3) * k     # Full width of hexagon
+    half = width / 2        # Half width
+    k1 = k / 2              # Half the height of hexagon
+    k2 = 3 * k1             # Commonly used constant, 1.5 height of hexagon
 
-    w = x - half
+    r1 = floor((p_width - half) / width)
+    r2 = floor((p_width - width) / width)
+    h1 = floor((p_height - k) / k2)
+    h = int(h1 * k2 + k1)
 
-    x = width
-    y = 5 * k1
-    while x + half <= p_width:
-        vertices[1].append((x, y))
-        x += width
+    if r1 == r2:
+        w = int(r1 * width + half)
+    else:
+        w = int(max(r1, r2) * width)
 
-    # Width value is set so that hexagons fit neatly
-    w = ceil(max(w, x - half))
+    vertices = []
+    flat_points = []
+    y = k
+    for i in range(h1):
+        vertices.append([])
+        if i & 1 == 0:
+            r = r1
+            x = half
+        else:
+            r = r2
+            x = width
+        for j in range(r):
+            p = (x, y)
+            vertices[i].append(p)
+            flat_points.append(p)
+            x += width
+        y += k2
 
-    i = 0
-    y = 5 * k1
-    while 1:
-        y += 3 * k1
-        if y + k >= p_height:
-            break
-
-        vertices.append([(x, y) for x, _ in vertices[i]])
-        i += 1
-
-    # Height set also so that hexagons fit neatly
-    h = ceil(y - k1)
-    flat_points = reduce(lambda r, c: r + c, vertices)
-    weights = [1] * len(flat_points)
-
-    def point_slope_y(_m, _x, _y):
-        return lambda __y: (__y - _y) / _m + _x
+    n_points = len(flat_points)
+    weights = [1] * n_points
 
     pixel_pairs = [(pixelsd, pixelsp), (pixelsp, pixelss), (pixelss, pixelsd)]
 
@@ -74,11 +70,11 @@ def main():
 
         p1 = choices(flat_points, weights=weights)[0]
 
-        def weight_func(_x, _y, _p):
+        def weight_func(_p, _x, _y):
             return min(pow(_x - _p[0], 2) / 50000 + pow(_y - _p[1], 2) / 50000, 1)
 
         for i in range(len(weights)):
-            weights[i] = min(weights[i], weight_func(*flat_points[i], p1))
+            weights[i] = min(weights[i], weight_func(p1, *flat_points[i]))
 
         p2 = choices(flat_points, weights=weights)[0]
 
@@ -98,12 +94,9 @@ def main():
             for row in vertices:
                 for x, y in row:
 
-                    dx = half
-                    dy = k1
-
                     # Left side of hexagon, upper and lower slopes
-                    upper_left_bound = point_slope_y(dy / dx, x, y + k)
-                    lower_left_bound = point_slope_y(-dy / dx, x, y - k)
+                    upper_left_bound = point_slope_y(k1 / half, x, y + k)
+                    lower_left_bound = point_slope_y(-k1 / half, x, y - k)
 
                     colors1 = (0, 0, 0)
                     colors2 = (0, 0, 0)
@@ -145,7 +138,7 @@ def main():
 
                     v2 = 1 - sum(colors) / 765
 
-                    y1 = v2 * 3 * k / 4
+                    y1 = v2 * k2 / 2
                     x1 = v2 * half / 2
                     x2 = v2 * half
 
@@ -165,10 +158,11 @@ def main():
                     ]
                     eps.fill_poly(star, *colors)
 
-            eps.out()
+            eps.draw()
+            return
 
         for i in range(len(weights)):
-            weights[i] = min(weights[i], weight_func(*flat_points[i], p2))
+            weights[i] = min(weights[i], weight_func(p2, *flat_points[i]))
 
         for p, weight in zip(flat_points, weights):
             weight_sketch.text(str(round(weight, 2)), *p)
@@ -177,6 +171,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # main()
-    options = ["-delay", "20", "-density", "200"]
-    make_gif_magick(pattern="pspy.*[.]eps", options=options, sort_key=lambda s: int(s.split('.')[0][4:]))
+    main()
+    # options = ["-delay", "20", "-density", "200"]
+    # make_gif_magick(pattern="pspy.*[.]eps", options=options, sort_key=lambda s: int(s.split('.')[0][4:]))
